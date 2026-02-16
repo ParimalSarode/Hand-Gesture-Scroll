@@ -1,0 +1,5 @@
+opencv-python>=4.11.0.86
+mediapipe>=0.10.32
+protobuf>=4.25.3
+numpy>=1.26.4
+kivy>=2.3.1
