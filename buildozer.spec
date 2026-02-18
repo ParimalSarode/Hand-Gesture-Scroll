@@ -20,7 +20,7 @@ version = 1.0
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy==2.1.0,opencv-python-headless,numpy,pyjnius
+requirements = python3,kivy==2.1.0,opencv-python-headless,numpy,pyjnius,mediapipe,protobuf
 
 # (list) Garden requirements
 #garden_requirements =

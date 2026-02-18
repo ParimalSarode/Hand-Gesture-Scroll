@@ -11,16 +11,15 @@
 **Build Tool:** Buildozer  
 
 **What it does:**
-- Uses phone's front/back camera to detect finger movements
-- Scrolls any app (Instagram, YouTube, Chrome, etc.) based on finger position
-- Hands-free scrolling experience
+- Uses phone's front camera to detect finger gestures (MediaPipe).
+- **Standalone Mode:** Works perfectly to test gestures within the app.
+- **Background Mode (Experimental):** Theoretically triggers system scrolls, but Android security often blocks this for other apps (Insta/YouTube) without special system permissions or root access.
 
 **How it works:**
-1. User opens app and grants camera permission
-2. Camera detects finger movement in different zones
-3. Motion in TOP zone = Scrolls UP
-4. Motion in BOTTOM zone = Scrolls DOWN
-5. Uses Android touch event simulation to scroll system-wide
+1. User opens app and grants camera permission.
+2. **Move Index Finger + Middle Finger UP** (Two fingers) = Scroll UP (Next).
+3. **Move Index Finger DOWN** (One finger) = Scroll DOWN (Prev).
+
 
 ---
 
@@ -344,9 +343,17 @@ For issues or questions, contact the developer who commissioned this project.
 ## 📝 BUILD CHECKLIST FOR ANTIGRAVITY
 
 - [ ] Install Ubuntu/WSL2
-- [ ] Install all dependencies
-- [ ] Copy main.py and buildozer.spec
-- [ ] Run `buildozer -v android debug`
+- [ ] Install**To Run on Windows PC:**
+1.  **Double-click** `GestureScroll.bat` in the project folder.
+2.  **Create a Desktop Shortcut:**
+    *   Right-click `GestureScroll.bat`
+    *   Select **"Show more options"** (Windows 11) -> **"Send to"** -> **"Desktop (create shortcut)"**
+    *   Now you can just double-click the icon on your desktop!
+
+**Controls (Static Hold Mode):**
+*   **Scroll DOWN:** Hold **1 Finger** up for 0.5s.
+*   **Scroll UP:** Hold **2 Fingers** up for 0.5s.
+
 - [ ] Wait 30-60 minutes for first build
 - [ ] APK created in bin/ folder
 - [ ] Test on Android device

@@ -16,6 +16,10 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import time
+try:
+    import pyautogui
+except ImportError:
+    pyautogui = None
 
 # Android imports
 try:
@@ -59,101 +63,58 @@ class FingerScrollApp(App):
         # Scroll logic
         self.prev_y = None
         self.scroll_triggered = False
+        # Scroll logic variables
         self.last_scroll_time = 0
-        self.scroll_cooldown = 0.5  # Seconds between scrolls
-        
-        # Sensitivity settings
-        self.swipe_threshold = 0.05  # Normalized distance (0.0 - 1.0)
-        
+        self.scroll_cooldown = 1.0 # 1 second between scrolls (prevent rapid fire)
+        self.hold_start_time = 0
+        self.current_gesture = 0 # 0=None, 1=OneFinger, 2=TwoFingers
+        self.gesture_duration_threshold = 0.5 # Hold for 0.5s to trigger
+
     def build(self):
         """Build the UI"""
         
-        # Request camera permission on Android
-        if ANDROID:
-            request_permissions([
-                Permission.CAMERA,
-                Permission.WRITE_EXTERNAL_STORAGE
-            ])
-        
-        # Main layout
+        # UI Layout
         layout = FloatLayout()
         
         # Title
         title = Label(
-            text='GESTURE SCROLL - SWIPE MODE',
+            text='GESTURE SCROLL - HOLD MODE',
             size_hint=(1, 0.1),
             pos_hint={'x': 0, 'y': 0.9},
             font_size='24sp',
-            bold=True,
-            color=(0, 1, 0, 1)
+            bold=True
         )
         layout.add_widget(title)
         
-        # Camera URL Input
-        self.url_input = TextInput(
-            text='',
-            hint_text='Enter DroidCam URL (e.g. http://192.168.1.5:4747/video)',
-            size_hint=(0.8, 0.08),
-            pos_hint={'x': 0.1, 'y': 0.82},
-            multiline=False
-        )
-        layout.add_widget(self.url_input)
-
-        # Status label
-        self.status_label = Label(
-            text='Enter URL above (or leave empty for webcam) & Press START',
-            size_hint=(1, 0.1),
-            pos_hint={'x': 0, 'y': 0.72},
-            font_size='16sp',
-            color=(1, 1, 1, 1)
-        )
-        layout.add_widget(self.status_label)
-        
         # Camera preview
         self.camera_image = Image(
-            size_hint=(1, 0.5),
+            size_hint=(1, 0.6),
             pos_hint={'x': 0, 'y': 0.2}
         )
         layout.add_widget(self.camera_image)
         
-        # Instructions
+        # Status/Instructions
+        self.status_label = Label(
+            text='Initializing Camera...',
+            size_hint=(1, 0.1),
+            pos_hint={'x': 0, 'y': 0.8},
+            font_size='18sp',
+            color=(0, 1, 0, 1),
+            halign='center'
+        )
+        layout.add_widget(self.status_label)
+        
         instructions = Label(
-            text='• Move Index Finger UP to Scroll UP\n• Move Index Finger DOWN to Scroll DOWN\n',
+            text='• HOLD 1 Finger (0.5s) -> Scroll DOWN (Prev)\n• HOLD 2 Fingers (0.5s) -> Scroll UP (Next)',
             size_hint=(1, 0.15),
             pos_hint={'x': 0, 'y': 0.05},
-            font_size='14sp',
-            color=(0.7, 0.7, 0.7, 1)
+            font_size='16sp',
+            color=(0.9, 0.9, 0.9, 1)
         )
         layout.add_widget(instructions)
         
-        # Control buttons
-        button_box = BoxLayout(
-            orientation='horizontal',
-            size_hint=(1, 0.1),
-            pos_hint={'x': 0, 'y': 0},
-            spacing=10,
-            padding=10
-        )
-        
-        self.start_button = Button(
-            text='START',
-            font_size='20sp',
-            background_color=(0, 0.7, 0, 1),
-            background_normal=''
-        )
-        self.start_button.bind(on_press=self.toggle_tracking)
-        button_box.add_widget(self.start_button)
-        
-        exit_button = Button(
-            text='EXIT',
-            font_size='20sp',
-            background_color=(0.7, 0, 0, 1),
-            background_normal=''
-        )
-        exit_button.bind(on_press=self.stop_app)
-        button_box.add_widget(exit_button)
-        
-        layout.add_widget(button_box)
+        # Auto-start camera after UI builds
+        Clock.schedule_once(lambda dt: self.start_tracking(), 1.0)
         
         return layout
     
@@ -165,57 +126,127 @@ class FingerScrollApp(App):
             self.stop_tracking()
     
     def start_tracking(self):
-        """Start camera and tracking"""
+        """Auto-start camera and tracking"""
         if self.capture is None:
-            url = self.url_input.text.strip()
+            # Auto-scan for cameras (Test 0, 1, 2)
+            print("Auto-scanning for cameras...")
+            found_camera = False
             
-            # Use URL if provided, otherwise try local webcam indices
-            if url:
-                print(f"Attempting to connect to: {url}")
-                self.capture = cv2.VideoCapture(url)
-            else:
-                # Try to open camera (try indices 0, 1, 2)
-                for i in range(3):
-                    self.capture = cv2.VideoCapture(i)
-                    if self.capture.isOpened():
+            # Try indices. If user said 1 was working, we can try to test that.
+            # We'll test availability by reading a frame.
+            for i in [1, 0, 2]: # Prioritize 1 (External) as per user feedback
+                temp_cap = cv2.VideoCapture(i)
+                if temp_cap.isOpened():
+                    # Optimization: Try to read a frame to ensure it's not a "ghost" camera
+                    ret, _ = temp_cap.read()
+                    if ret:
+                        self.capture = temp_cap
+                        print(f"Verified Camera at index {i}")
+                        found_camera = True
                         break
+                    else:
+                        print(f"Camera at index {i} opened but failed to read frame.")
+                        temp_cap.release()
+                else:
+                    temp_cap.release()
             
-            if self.capture and self.capture.isOpened():
-                # Set camera properties for performance (only works for some backends)
+            if found_camera:
+                # Set camera properties
                 self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 self.capture.set(cv2.CAP_PROP_FPS, 30)
+                
+                self.tracking_active = True
+                self.status_label.text = 'Camera Active!'
+                Clock.schedule_interval(self.process_frame, 1.0/30.0)
             else:
-                 self.capture = None # Ensure it is None if failed
+                self.status_label.text = 'No working camera found!'
+                self.status_label.color = (1, 0, 0, 1)
+                self.capture = None
+    
+    def switch_camera(self, instance):
+        """Cycle to the next available camera"""
+        self.stop_tracking()
+        # Logic to try next index could be complex to state management, 
+        # simpler to just restart tracking which now prioritizes 1, then 0.
+        # But if we want to force switch, we might need a counter.
+        # For now, let's just re-trigger start which scans.
+        self.start_tracking()
 
-        if self.capture and self.capture.isOpened():
-            self.tracking_active = True
-            self.start_button.text = 'STOP'
-            self.start_button.background_color = (0.7, 0, 0, 1)
-            self.status_label.text = 'TRACKING ACTIVE - Show Index Finger!'
-            
-            # Start processing loop
-            Clock.schedule_interval(self.process_frame, 1.0 / 30.0)
-        else:
-            self.status_label.text = 'ERROR: Cannot open camera! Check URL/Connection.'
+    def build(self):
+        # UI Layout
+        layout = FloatLayout()
+        
+        # Title
+        title = Label(
+            text='GESTURE SCROLL - HOLD MODE',
+            size_hint=(1, 0.1),
+            pos_hint={'x': 0, 'y': 0.9},
+            font_size='24sp',
+            bold=True
+        )
+        layout.add_widget(title)
+        
+        # Camera preview
+        self.camera_image = Image(
+            size_hint=(1, 0.6),
+            pos_hint={'x': 0, 'y': 0.2}
+        )
+        layout.add_widget(self.camera_image)
+        
+        # Status/Instructions
+        self.status_label = Label(
+            text='Initializing Camera...',
+            size_hint=(1, 0.1),
+            pos_hint={'x': 0, 'y': 0.8},
+            font_size='18sp',
+            color=(0, 1, 0, 1),
+            halign='center'
+        )
+        layout.add_widget(self.status_label)
+        
+        instructions = Label(
+            text='• HOLD 1 Finger (0.5s) -> Scroll DOWN (Prev)\n• HOLD 2 Fingers (0.5s) -> Scroll UP (Next)',
+            size_hint=(1, 0.15),
+            pos_hint={'x': 0, 'y': 0.05},
+            font_size='16sp',
+            color=(0.9, 0.9, 0.9, 1)
+        )
+        layout.add_widget(instructions)
+        
+        # Auto-start camera after UI builds
+        Clock.schedule_once(lambda dt: self.start_tracking(), 1.0)
+        
+        # RESTART Button (In case of camera error)
+        restart_btn = Button(
+            text='RESTART APP',
+            size_hint=(0.3, 0.1),
+            pos_hint={'x': 0.35, 'y': 0},
+            background_color=(0, 0, 1, 1)
+        )
+        restart_btn.bind(on_press=self.restart_app)
+        layout.add_widget(restart_btn)
+        
+        return layout
+
+    def restart_app(self, instance):
+        self.stop_tracking()
+        self.start_tracking()
     
     def stop_tracking(self):
-        """Stop tracking"""
+        """Stop tracking logic"""
         self.tracking_active = False
         self.start_button.text = 'START'
         self.start_button.background_color = (0, 0.7, 0, 1)
-        self.status_label.text = 'Tracking stopped'
-        
         Clock.unschedule(self.process_frame)
-        
         if self.capture:
             self.capture.release()
             self.capture = None
-        
-        self.prev_y = None
+        self.camera_image.texture = None
+        self.status_label.text = 'Stopped'
     
     def process_frame(self, dt):
-        """Process camera frame and detect gestures using MediaPipe"""
+        """Process camera frame and detect gestures using MediaPipe (STATIC HOLD Logic)"""
         if not self.tracking_active or not self.capture:
             return
         
@@ -232,83 +263,95 @@ class FingerScrollApp(App):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.hands.process(rgb_frame)
         
-        # Check for hands
+        detected_gesture = 0 # Default: No gesture
+        
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
                 # Draw landmarks
                 self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
-                # Get Finger Tips
+                # Get Key Landmarks
+                wrist = hand_landmarks.landmark[0]
+                
+                # Index Finger
                 index_tip = hand_landmarks.landmark[8]
+                index_pip = hand_landmarks.landmark[6] # Middle joint
+                
+                # Middle Finger
                 middle_tip = hand_landmarks.landmark[12]
-                
-                # Get Finger PIP (lower joint) for simple extension check
-                index_pip = hand_landmarks.landmark[6]
                 middle_pip = hand_landmarks.landmark[10]
-                
-                # Check if fingers are extended (Tip above PIP) - Note Y is inverted (0 is top)
-                index_extended = index_tip.y < index_pip.y
-                middle_extended = middle_tip.y < middle_pip.y
-                
-                current_y = index_tip.y
-                
-                # Draw circle on active finger(s)
-                if index_extended:
-                    cx, cy = int(index_tip.x * w), int(index_tip.y * h)
-                    color = (0, 255, 0) if not middle_extended else (0, 255, 255) # Green for 1, Yellow for 2
-                    cv2.circle(frame, (cx, cy), 15, color, cv2.FILLED)
-                
-                if middle_extended:
-                    cx, cy = int(middle_tip.x * w), int(middle_tip.y * h)
-                    cv2.circle(frame, (cx, cy), 15, (0, 255, 255), cv2.FILLED)
 
-                # Calculate Movement
-                if self.prev_y is not None:
-                    dy = current_y - self.prev_y
-                    current_time = time.time()
-                    
-                    if current_time - self.last_scroll_time > self.scroll_cooldown:
-                        
-                        # SCROLL UP INTERACTION: swipe UP with TWO fingers (Index + Middle)
-                        if dy < -self.swipe_threshold:  # Moving UP
-                            if index_extended and middle_extended:
-                                self.status_label.text = 'SWIPE UP (2 Fingers) -> Next!'
-                                self.scroll_down() # App logic: Swipe UP -> Scroll Content Down (Next)
-                                self.last_scroll_time = current_time
-                                self.prev_y = None
-                            else:
-                                self.status_label.text = 'Use 2 Fingers to Scroll Up'
-                                
-                        # SCROLL DOWN INTERACTION: swipe DOWN with ONE finger (Index only)
-                        elif dy > self.swipe_threshold:  # Moving DOWN
-                            if index_extended and not middle_extended:
-                                self.status_label.text = 'SWIPE DOWN (1 Finger) -> Prev!'
-                                self.scroll_up() # App logic: Swipe DOWN -> Scroll Content Up (Prev)
-                                self.last_scroll_time = current_time
-                                self.prev_y = None
-                            elif index_extended and middle_extended:
-                                self.status_label.text = 'Show only 1 Finger to Scroll Down'   
-                    
-                    else:
-                        self.status_label.text = '...cooldown...'
+                # Robust Extension Logic: Euclidean Distance
+                # Index
+                dist_index_tip = (index_tip.x - wrist.x)**2 + (index_tip.y - wrist.y)**2
+                dist_index_pip = (index_pip.x - wrist.x)**2 + (index_pip.y - wrist.y)**2
+                index_extended = dist_index_tip > dist_index_pip
+                
+                # Middle
+                dist_middle_tip = (middle_tip.x - wrist.x)**2 + (middle_tip.y - wrist.y)**2
+                dist_middle_pip = (middle_pip.x - wrist.x)**2 + (middle_pip.y - wrist.y)**2
+                middle_extended = dist_middle_tip > dist_middle_pip
+                
+                # Count Fingers
+                if index_extended and middle_extended:
+                    detected_gesture = 2
+                elif index_extended:
+                    detected_gesture = 1
                 else:
-                    move_text = "Tracking..."
-                    if index_extended and middle_extended:
-                        move_text = "Ready to Scroll Up (Move Up)"
-                    elif index_extended:
-                        move_text = "Ready to Scroll Down (Move Down)"
-                    self.status_label.text = move_text
+                    detected_gesture = 0
 
-                # Update previous position
-                self.prev_y = current_y
-
+                # Visual Feedback
+                color = (0, 0, 255) # Red (None)
+                if detected_gesture == 1: color = (0, 255, 0) # Green
+                if detected_gesture == 2: color = (0, 255, 255) # Yellow
+                
+                cv2.putText(frame, f"Fingers Detected: {detected_gesture}", (10, 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                           
+                # HOLD LOGIC
+                current_time = time.time()
+                
+                # Check for gesture change
+                if detected_gesture != self.current_gesture:
+                    self.current_gesture = detected_gesture
+                    self.hold_start_time = current_time # Reset timer
+                    # print(f"Gesture Changed to: {detected_gesture}")
+                
+                else:
+                    # Gesture is stable
+                    hold_duration = current_time - self.hold_start_time
+                    
+                    # Show progress bar or text
+                    if detected_gesture > 0:
+                        progress = min(hold_duration / self.gesture_duration_threshold, 1.0)
+                        bar_width = int(progress * 200)
+                        cv2.rectangle(frame, (10, 60), (10 + bar_width, 70), color, -1)
+                    
+                    if hold_duration > self.gesture_duration_threshold:
+                        # Threshold met! Trigger Action if cooldown passed
+                        if current_time - self.last_scroll_time > self.scroll_cooldown:
+                            
+                            if detected_gesture == 1:
+                                # 1 Finger -> Scroll Down (Prev)
+                                self.status_label.text = "HOLD 1 -> Scroll Down (Prev)"
+                                self.scroll_up() # App Logic Up = System Scroll Up (Prev)
+                                self.last_scroll_time = current_time
+                                
+                            elif detected_gesture == 2:
+                                # 2 Fingers -> Scroll Up (Next)
+                                self.status_label.text = "HOLD 2 -> Scroll Up (Next)"
+                                self.scroll_down() # App Logic Down = System Scroll Down (Next/PageDown)
+                                self.last_scroll_time = current_time
+                        else:
+                            self.status_label.text = "...cooldown..."
+                            
         else:
             self.status_label.text = 'No Hand Detected'
-            self.prev_y = None
+            self.current_gesture = 0
         
         # Convert frame to texture for display
         buf = cv2.flip(frame, 0).tobytes()
-        texture = Texture.create(size=(w, h), colorfmt='bgr')
+        texture = Texture.create(size=(frame.shape[1], frame.shape[0]), colorfmt='bgr')
         texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
         self.camera_image.texture = texture
     
@@ -316,15 +359,35 @@ class FingerScrollApp(App):
         """Perform scroll up action"""
         if ANDROID:
             self.perform_android_scroll(up=True)
+        elif pyautogui:
+            pyautogui.scroll(-300) # PC: Negative is down? Wait.
+            # On Windows: 
+            # Scroll UP (wheel forward) -> Content moves DOWN. 
+            # App Logic: "Scroll Down" action (move finger down) means we want to see PREVIOUS content (scroll up).
+            # Let's align with the app logic mapping:
+            # self.scroll_down() was called when User swiped UP (2 fingers) -> "Next" -> Content moves UP -> Scroll Down
+            
+            # Wait, let's look at the mapping I set in process_frame:
+            # Swipe UP (2 fingers) -> self.scroll_down() -> Next Item.
+            # To go to Next Item on PC, we scroll the wheel DOWN (negative). 
+            
+            # Swipe DOWN (1 finger) -> self.scroll_up() -> Prev Item.
+            # To go to Prev Item on PC, we scroll the wheel UP (positive).
+            
+            print("PC SCROLL: UP (Prev)")
+            pyautogui.scroll(300)
         else:
-            print("SCROLL UP ACTION TRIGGERED")
+            print("SCROLL UP ACTION TRIGGERED (pyautogui not found)")
     
     def scroll_down(self):
         """Perform scroll down action"""
         if ANDROID:
             self.perform_android_scroll(up=False)
+        elif pyautogui:
+            print("PC SCROLL: DOWN (Next)")
+            pyautogui.scroll(-300)
         else:
-            print("SCROLL DOWN ACTION TRIGGERED")
+            print("SCROLL DOWN ACTION TRIGGERED (pyautogui not found)")
     
     @run_on_ui_thread
     def perform_android_scroll(self, up=True):
